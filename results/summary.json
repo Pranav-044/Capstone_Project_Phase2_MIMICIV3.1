@@ -1,0 +1,6 @@
+{
+  "final_global_auc": 0.814318955031818,
+  "final_global_f1": 0.31513260530421217,
+  "final_global_accuracy": 0.8827770360480641,
+  "final_avg_local_auc": 0.8229990110983897
+}
