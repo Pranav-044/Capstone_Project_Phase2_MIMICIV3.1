@@ -13,7 +13,7 @@ import time
 from sklearn.metrics import roc_auc_score, f1_score, recall_score, precision_score, accuracy_score
 
 # Add Phase 1 to path to import Agglomerative clustering
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'fl_physionet_project')))
+
 from clustering import AgglomerativeClientClusterer
 
 # Import Phase 2 tools
