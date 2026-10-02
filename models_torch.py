@@ -234,3 +234,214 @@ def train_local(
 
     model.eval()
     return get_flat_weights(model), np.array(gradient_path)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Body-Head Weight Utilities  (Paper 6 – PPFL Tabular EHR Fix)
+#
+#  Architecture split:
+#    BODY  = net[0..5]  → Linear(44,128), ReLU, Dropout,
+#                          Linear(128,64), ReLU, Dropout
+#    HEAD  = net[6..9]  → Linear(64,32), ReLU,
+#                          Linear(32,1), Sigmoid
+#
+#  Body is aggregated globally (shared representation);
+#  Head is personalised per hospital (cluster-specific decision).
+#
+#  Layer index map for nn.Sequential:
+#    0: Linear(44,128)   ← body
+#    1: ReLU             ← (no params)
+#    2: Dropout          ← (no params)
+#    3: Linear(128,64)   ← body
+#    4: ReLU             ← (no params)
+#    5: Dropout          ← (no params)
+#    6: Linear(64,32)    ← head
+#    7: ReLU             ← (no params)
+#    8: Linear(32,1)     ← head
+#    9: Sigmoid          ← (no params)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _body_params(model: FederatedMLPTorch):
+    """Return an iterator over body (fc1, fc2) parameter tensors."""
+    # Parametric layers at indices 0 and 3
+    return [p for i, m in enumerate(model.net)
+            if isinstance(m, nn.Linear) and i < 6
+            for p in m.parameters()]
+
+
+def _head_params(model: FederatedMLPTorch):
+    """Return an iterator over head (fc3, fc4) parameter tensors."""
+    return [p for i, m in enumerate(model.net)
+            if isinstance(m, nn.Linear) and i >= 6
+            for p in m.parameters()]
+
+
+def get_body_weights(model: FederatedMLPTorch) -> np.ndarray:
+    """
+    Extract body (shared representation) parameters as a flat numpy array.
+
+    Body layers: Linear(44→128) and Linear(128→64) — indices 0 and 3
+    in the nn.Sequential.
+
+    Parameters
+    ----------
+    model : FederatedMLPTorch
+
+    Returns
+    -------
+    np.ndarray  — 1-D array of body parameter values (float32)
+    """
+    return torch.cat([
+        p.detach().flatten() for p in _body_params(model)
+    ]).cpu().numpy()
+
+
+def set_body_weights(model: FederatedMLPTorch,
+                     flat_body: np.ndarray) -> None:
+    """
+    Load flat body weights back into the model's body layers (in-place).
+
+    Parameters
+    ----------
+    model     : FederatedMLPTorch
+    flat_body : np.ndarray — 1-D array matching get_body_weights() output
+    """
+    flat_t = torch.tensor(flat_body, dtype=torch.float32)
+    offset = 0
+    with torch.no_grad():
+        for p in _body_params(model):
+            n = p.numel()
+            p.copy_(flat_t[offset: offset + n].reshape(p.shape))
+            offset += n
+
+
+def get_head_weights(model: FederatedMLPTorch) -> np.ndarray:
+    """
+    Extract head (decision layer) parameters as a flat numpy array.
+
+    Head layers: Linear(64→32) and Linear(32→1) — indices 6 and 8
+    in the nn.Sequential.
+
+    Parameters
+    ----------
+    model : FederatedMLPTorch
+
+    Returns
+    -------
+    np.ndarray  — 1-D array of head parameter values (float32)
+    """
+    return torch.cat([
+        p.detach().flatten() for p in _head_params(model)
+    ]).cpu().numpy()
+
+
+def set_head_weights(model: FederatedMLPTorch,
+                     flat_head: np.ndarray) -> None:
+    """
+    Load flat head weights back into the model's head layers (in-place).
+
+    Parameters
+    ----------
+    model     : FederatedMLPTorch
+    flat_head : np.ndarray — 1-D array matching get_head_weights() output
+    """
+    flat_t = torch.tensor(flat_head, dtype=torch.float32)
+    offset = 0
+    with torch.no_grad():
+        for p in _head_params(model):
+            n = p.numel()
+            p.copy_(flat_t[offset: offset + n].reshape(p.shape))
+            offset += n
+
+
+def body_weight_count(model: FederatedMLPTorch) -> int:
+    """Return total number of body parameters."""
+    return sum(p.numel() for p in _body_params(model))
+
+
+def head_weight_count(model: FederatedMLPTorch) -> int:
+    """Return total number of head parameters."""
+    return sum(p.numel() for p in _head_params(model))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Feature Projection Adapter  (Paper 7 – LCFed Feature Heterogeneity Fix)
+#
+#  When different hospitals record different clinical feature sets
+#  (e.g., Hospital A missing lab tests, Hospital B missing vital signs),
+#  a per-hospital learnable linear adapter projects the available
+#  features into the standard 44-dimensional shared input space,
+#  then feeds into the shared FederatedMLPTorch body.
+#
+#  Architecture:
+#    FeatureProjectionAdapter.adapter : Linear(input_dim → 44), ReLU
+#    → FederatedMLPTorch body + head
+# ─────────────────────────────────────────────────────────────────────────────
+
+class FeatureProjectionAdapter(nn.Module):
+    """
+    Learnable per-hospital feature projection adapter for LCFed-style
+    feature-space heterogeneity handling.
+
+    Projects a hospital's available feature dimensions (possibly < 44 due
+    to missing feature groups) into the standard 44-dimensional input
+    space expected by the shared FederatedMLPTorch backbone.
+
+    Parameters
+    ----------
+    input_dim     : int — number of features available at this hospital
+                    (e.g., 33 if one feature group of 11 is missing)
+    projected_dim : int — target dimensionality; must match FederatedMLPTorch
+                    input_dim (default 44)
+
+    Usage
+    -----
+    adapter = FeatureProjectionAdapter(input_dim=33, projected_dim=44)
+    X_proj  = adapter(torch.tensor(X_masked, dtype=torch.float32))
+    # X_proj can now be fed directly into FederatedMLPTorch
+    """
+
+    def __init__(self, input_dim: int, projected_dim: int = 44):
+        super().__init__()
+        self.input_dim     = input_dim
+        self.projected_dim = projected_dim
+
+        self.adapter = nn.Sequential(
+            nn.Linear(input_dim, projected_dim),
+            nn.ReLU(),
+        )
+
+        # He initialisation for the projection layer
+        nn.init.kaiming_normal_(
+            self.adapter[0].weight, mode='fan_in', nonlinearity='relu')
+        nn.init.zeros_(self.adapter[0].bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Project input features to the shared 44-dimensional space.
+
+        Parameters
+        ----------
+        x : torch.Tensor, shape (batch, input_dim)
+
+        Returns
+        -------
+        torch.Tensor, shape (batch, projected_dim)
+        """
+        return self.adapter(x)
+
+    def get_flat_adapter_weights(self) -> np.ndarray:
+        """Return adapter parameters as a flat numpy array."""
+        return torch.cat([
+            p.detach().flatten() for p in self.adapter.parameters()
+        ]).cpu().numpy()
+
+    def set_flat_adapter_weights(self, flat_w: np.ndarray) -> None:
+        """Load flat adapter weights in-place."""
+        flat_t = torch.tensor(flat_w, dtype=torch.float32)
+        offset = 0
+        with torch.no_grad():
+            for p in self.adapter.parameters():
+                n = p.numel()
+                p.copy_(flat_t[offset: offset + n].reshape(p.shape))
+                offset += n

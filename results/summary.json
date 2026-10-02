@@ -1,9 +1,9 @@
 {
-  "final_global_auc": 0.8184298741972066,
-  "final_global_f1": 0.3984375,
-  "final_global_accuracy": 0.8766355140186916,
-  "final_global_recall": 0.375,
-  "final_global_precision": 0.425,
+  "final_global_auc": 0.8175837461145682,
+  "final_global_f1": 0.3975,
+  "final_global_accuracy": 0.8712950600801068,
+  "final_global_recall": 0.3897058823529412,
+  "final_global_precision": 0.40561224489795916,
   "final_global_threshold": 0.5,
-  "final_avg_local_auc": 0.8063137344605982
+  "final_avg_local_auc": 0.7816654433030292
 }

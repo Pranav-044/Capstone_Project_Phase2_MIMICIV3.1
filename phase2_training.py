@@ -27,6 +27,17 @@ from gradient_clustering import (
 from soft_membership import compute_soft_membership, soft_aggregate
 from personalization import personalize_all_clients
 from utils import evaluate_flat, evaluate_personalized_clients
+from evaluate_fairness import (
+    compute_fairness_metrics,
+    extract_per_client_auroc,
+    comm_reduction_ratio,
+)
+from models_torch import (
+    get_body_weights, set_body_weights,
+    get_head_weights, set_head_weights,
+    body_weight_count, head_weight_count,
+    fedavg_aggregate,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -48,8 +59,19 @@ def run_phase2(
     drift_tau: float = 0.50,
     mcfl_n_iter: int = 60,
     mcfl_lr_alpha: float = 0.10,
+    mcfl_epsilon: float = 1e-3,
     verbose: bool = True,
     seed: int = 42,
+    # ── Paper 5: Ditto proximal fine-tuning ──────────────────────────────
+    mode: str = "standard",       # "standard" | "ditto" | "ppfl" | "full"
+    lambda_ditto: float = 0.0,    # Ditto penalty (0 = disabled)
+    ditto_lr: float = 0.0005,     # Ditto SGD learning rate
+    ditto_epochs: int = 5,        # Ditto fine-tuning epochs
+    # ── Paper 6: Body-Head PPFL split ────────────────────────────────────
+    ppfl_split: bool = False,     # If True, only aggregate body weights
+    # ── Cluster bounds ────────────────────────────────────────────────────
+    n_clusters_min: int = 2,      # min clusters for spectral search
+    n_clusters_max: int = None,   # max clusters (None = K-1)
 ) -> dict:
     """
     Run Phase 2 combined FL pipeline.
@@ -89,11 +111,22 @@ def run_phase2(
         set_flat_weights(models[cid], init_flat)
 
     # ── History ───────────────────────────────────────────────────────────────
+    # ── Resolve mode flags ───────────────────────────────────────────────────
+    # mode="ditto" or "full"  → enable Ditto proximal fine-tuning
+    use_ditto = (mode in ('ditto', 'full')) or (lambda_ditto > 0.0)
+    # mode="ppfl"  or "full"  → aggregate only body weights globally
+    use_ppfl  = ppfl_split or (mode in ('ppfl', 'full'))
+
+    if verbose:
+        print(f"  Mode: {mode}  |  Ditto: {use_ditto} (lambda={lambda_ditto})  "
+              f"|  PPFL body-split: {use_ppfl}")
+
     round_metrics       = []
     alpha_history       = []
     sim_history         = []
     pi_history          = []
     drift_history       = []
+    fairness_history    = []  # per-round fairness metrics (Paper 5)
 
     prev_weights        = {cid: init_flat.copy() for cid in client_ids}
     personalized_weights = None
@@ -159,7 +192,11 @@ def run_phase2(
 
         # ── STAGE 2b: Soft membership π ───────────────────────────────────────
         pi_matrix, n_clusters, hard_labels = compute_soft_membership(
-            sim_matrix, temperature=soft_temperature)
+            sim_matrix,
+            temperature=soft_temperature,
+            min_clusters=n_clusters_min,
+            max_clusters=n_clusters_max,
+        )
         pi_history.append(pi_matrix.copy())
 
         if verbose:
@@ -170,9 +207,38 @@ def run_phase2(
         # ── STAGE 2c: Soft-weighted expert aggregation ────────────────────────
         client_n_samples = {cid: client_data[cid]['n_samples']
                             for cid in client_ids}
-        expert_weights = soft_aggregate(
-            curr_weights, client_n_samples,
-            pi_matrix, client_ids, n_clusters)
+
+        if use_ppfl:
+            # PPFL body-head split: aggregate only body weights globally.
+            # Each hospital's head weights are kept local (personalised).
+            # Build body-only weight vectors for aggregation.
+            body_weights = {cid: get_body_weights(models[cid])
+                            for cid in client_ids}
+            expert_body_weights = soft_aggregate(
+                body_weights, client_n_samples,
+                pi_matrix, client_ids, n_clusters)
+            # Expert full-model weights: global body + client's own head
+            expert_weights = {}
+            for cid in client_ids:
+                client_head = get_head_weights(models[cid])
+                client_experts = []
+                for j in range(n_clusters):
+                    full_expert = np.concatenate([
+                        expert_body_weights[j],
+                        client_head
+                    ])
+                    client_experts.append(full_expert)
+                expert_weights[cid] = client_experts
+            if verbose:
+                ratio = comm_reduction_ratio(models[client_ids[0]])
+                print(f"  [PPFL] Body-only aggregation: "
+                      f"{ratio['body_params']:,} params, "
+                      f"{ratio['body_only_mb']:.4f} MB/round "
+                      f"(saves {ratio['savings_pct']:.1f}%)")
+        else:
+            expert_weights = soft_aggregate(
+                curr_weights, client_n_samples,
+                pi_matrix, client_ids, n_clusters)
 
         if verbose:
             print(f"  [FedSPD] Produced {n_clusters} expert models")
@@ -195,6 +261,9 @@ def run_phase2(
             n_iter=mcfl_n_iter,
             lr_alpha=mcfl_lr_alpha,
             verbose=False,
+            lambda_ditto=lambda_ditto if use_ditto else 0.0,
+            ditto_lr=ditto_lr,
+            ditto_epochs=ditto_epochs,
         )
         alpha_history.append({cid: alpha_dict[cid].round(4)
                                for cid in client_ids})
@@ -208,21 +277,31 @@ def run_phase2(
             personalized_weights, client_data,
             X_test, y_test, input_dim)
 
+        # Per-round fairness metrics (Paper 5)
+        per_client_auroc = extract_per_client_auroc(eval_res)
+        fairness         = compute_fairness_metrics(per_client_auroc)
+        fairness_history.append(fairness)
+
         gm = eval_res['mean_personal_global']
         round_metrics.append({
-            'round':         rnd,
-            'global_auc':    gm['auc'],
-            'global_f1':     gm['f1'],
-            'global_acc':    gm['accuracy'],
-            'global_recall': gm['recall'],
-            'global_prec':   gm['precision'],
-            'threshold':     gm['threshold'],
-            'avg_local_auc': eval_res['avg_local_auc'],
-            'avg_local_f1':  eval_res.get('avg_local_f1', 0.0),
-            'avg_local_rec': eval_res.get('avg_local_recall', 0.0),
-            'n_clusters':    n_clusters,
-            'drifted':       drifted,
-            'time_sec':      time.time() - t0,
+            'round':              rnd,
+            'global_auc':         gm['auc'],
+            'global_f1':          gm['f1'],
+            'global_acc':         gm['accuracy'],
+            'global_recall':      gm['recall'],
+            'global_prec':        gm['precision'],
+            'threshold':          gm['threshold'],
+            'avg_local_auc':      eval_res['avg_local_auc'],
+            'avg_local_f1':       eval_res.get('avg_local_f1', 0.0),
+            'avg_local_rec':      eval_res.get('avg_local_recall', 0.0),
+            'n_clusters':         n_clusters,
+            'drifted':            drifted,
+            'time_sec':           time.time() - t0,
+            # Fairness (Paper 5)
+            'fairness_mean_auc':  fairness['mean_auroc'],
+            'fairness_std_auc':   fairness['std_auroc'],
+            'fairness_worst_auc': fairness['worst_client_auroc'],
+            'fairness_range_auc': fairness['range_auroc'],
         })
 
         if verbose:
@@ -234,6 +313,10 @@ def run_phase2(
                   f"Thresh={rm['threshold']:.2f} | "
                   f"Clusters={rm['n_clusters']} | "
                   f"Time={rm['time_sec']:.1f}s")
+            # Fairness summary per round
+            print(f"  [Fairness] MeanAUC={rm['fairness_mean_auc']:.4f} | "
+                  f"StdAUC={rm['fairness_std_auc']:.4f} | "
+                  f"WorstAUC={rm['fairness_worst_auc']:.4f}")
 
         # Update prev weights for next round
         prev_weights = {cid: curr_weights[cid].copy() for cid in client_ids}
@@ -262,6 +345,8 @@ def run_phase2(
         'sim_history':            sim_history,
         'pi_history':             pi_history,
         'drift_history':          drift_history,
+        'fairness_history':       fairness_history,        # NEW — Paper 5
         'final_expert_weights':   expert_weights,
         'final_personal_weights': personalized_weights,
+        'mode':                   mode,                   # NEW — experiment tag
     }

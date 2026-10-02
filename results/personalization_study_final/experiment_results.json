@@ -1,0 +1,172 @@
+[
+  {
+    "name": "FedAvg baseline",
+    "configuration": {
+      "mode": "fedavg"
+    },
+    "global_auc": 0.7956328920540348,
+    "global_f1": 0.3722304283604136,
+    "mean_client_auc": 0.7957743369913214,
+    "std_client_auc": 0.05249041899865066,
+    "worst_client_auc": 0.7080867850098619,
+    "range_client_auc": 0.15667385328801042,
+    "communication_mb_per_round": 0.086532,
+    "communication_savings_pct": 0.0,
+    "per_client_auc": {
+      "0": 0.8258064516129032,
+      "1": 0.7766574786014797,
+      "2": 0.8035603314344899,
+      "3": 0.7080867850098619,
+      "4": 0.8647606382978723
+    },
+    "elapsed_seconds": 129.13650780002354
+  },
+  {
+    "name": "MCFL personalization",
+    "configuration": {
+      "mode": "standard",
+      "mcfl_lr": 0.1
+    },
+    "global_auc": 0.802457737665039,
+    "global_f1": 0.37515842839036756,
+    "mean_client_auc": 0.7952479213855184,
+    "std_client_auc": 0.04082841404797271,
+    "worst_client_auc": 0.7366863905325444,
+    "range_client_auc": 0.11943063074405147,
+    "communication_mb_per_round": 0.086532,
+    "communication_savings_pct": 0.0,
+    "per_client_auc": {
+      "0": 0.8210918114143919,
+      "1": 0.7729218047294356,
+      "2": 0.7894225789746244,
+      "3": 0.7366863905325444,
+      "4": 0.8561170212765958
+    },
+    "elapsed_seconds": 210.0202817999525
+  },
+  {
+    "name": "Full personalization (default)",
+    "configuration": {
+      "mode": "full",
+      "lambda_ditto": 0.01,
+      "mcfl_lr": 0.1,
+      "ppfl_split": true
+    },
+    "global_auc": 0.8175837461145682,
+    "global_f1": 0.3975,
+    "mean_client_auc": 0.7816654433030292,
+    "std_client_auc": 0.06801383178645214,
+    "worst_client_auc": 0.6538461538461537,
+    "range_client_auc": 0.20333469721767605,
+    "communication_mb_per_round": 0.07808,
+    "communication_savings_pct": 9.77,
+    "per_client_auc": {
+      "0": 0.6538461538461537,
+      "1": 0.7960249528507182,
+      "2": 0.7916105644743655,
+      "3": 0.8096646942800788,
+      "4": 0.8571808510638298
+    },
+    "elapsed_seconds": 231.77573170000687
+  },
+  {
+    "name": "Full: Ditto \u03bb=0.001",
+    "configuration": {
+      "mode": "full",
+      "lambda_ditto": 0.001,
+      "mcfl_lr": 0.1,
+      "ppfl_split": true
+    },
+    "global_auc": 0.8251720901126408,
+    "global_f1": 0.4084507042253521,
+    "mean_client_auc": 0.8020311543246945,
+    "std_client_auc": 0.04990930724799743,
+    "worst_client_auc": 0.7339950372208436,
+    "range_client_auc": 0.12863794150256058,
+    "communication_mb_per_round": 0.07808,
+    "communication_savings_pct": 9.77,
+    "per_client_auc": {
+      "0": 0.7339950372208436,
+      "1": 0.7773828521688669,
+      "2": 0.7791429311237701,
+      "3": 0.8570019723865878,
+      "4": 0.8626329787234042
+    },
+    "elapsed_seconds": 243.70718019997003
+  },
+  {
+    "name": "Full: Ditto \u03bb=0.1",
+    "configuration": {
+      "mode": "full",
+      "lambda_ditto": 0.1,
+      "mcfl_lr": 0.1,
+      "ppfl_split": true
+    },
+    "global_auc": 0.8225110466721901,
+    "global_f1": 0.3966142684401451,
+    "mean_client_auc": 0.8208826722260211,
+    "std_client_auc": 0.035169644703347575,
+    "worst_client_auc": 0.7867401711881619,
+    "range_client_auc": 0.08240876498205085,
+    "communication_mb_per_round": 0.07808,
+    "communication_savings_pct": 9.77,
+    "per_client_auc": {
+      "0": 0.7955334987593051,
+      "1": 0.7867401711881619,
+      "2": 0.7950025893319522,
+      "3": 0.8579881656804733,
+      "4": 0.8691489361702127
+    },
+    "elapsed_seconds": 250.60038379998878
+  },
+  {
+    "name": "Full: MCFL lr=0.03",
+    "configuration": {
+      "mode": "full",
+      "lambda_ditto": 0.01,
+      "mcfl_lr": 0.03,
+      "ppfl_split": true
+    },
+    "global_auc": 0.8208661648657065,
+    "global_f1": 0.4,
+    "mean_client_auc": 0.7767115010898633,
+    "std_client_auc": 0.08643462965344582,
+    "worst_client_auc": 0.618362282878412,
+    "range_client_auc": 0.2392175043556306,
+    "communication_mb_per_round": 0.07808,
+    "communication_savings_pct": 9.77,
+    "per_client_auc": {
+      "0": 0.618362282878412,
+      "1": 0.7655955316988249,
+      "2": 0.7919212843086484,
+      "3": 0.8500986193293886,
+      "4": 0.8575797872340426
+    },
+    "elapsed_seconds": 212.1899390000035
+  },
+  {
+    "name": "Full: MCFL lr=0.30",
+    "configuration": {
+      "mode": "full",
+      "lambda_ditto": 0.01,
+      "mcfl_lr": 0.3,
+      "ppfl_split": true
+    },
+    "global_auc": 0.8247336018614817,
+    "global_f1": 0.4067357512953368,
+    "mean_client_auc": 0.7510657962595191,
+    "std_client_auc": 0.11289262785195522,
+    "worst_client_auc": 0.5317617866004962,
+    "range_client_auc": 0.320498851697376,
+    "communication_mb_per_round": 0.07808,
+    "communication_savings_pct": 9.77,
+    "per_client_auc": {
+      "0": 0.5317617866004962,
+      "1": 0.7692223995357609,
+      "2": 0.7953780424650441,
+      "3": 0.8067061143984221,
+      "4": 0.8522606382978722
+    },
+    "elapsed_seconds": 160.35777130001225
+  }
+]

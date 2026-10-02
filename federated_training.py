@@ -13,7 +13,10 @@ Implements:
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from models import FederatedMLP, fedavg_aggregate, fedprox_aggregate, dp_aggregate
+try:
+    from models import FederatedMLP, fedavg_aggregate, fedprox_aggregate, dp_aggregate
+except ModuleNotFoundError:
+    pass
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -558,3 +561,173 @@ def train_adaptive_clustered_fl(client_data, clusterer, input_dim,
             print(f"  Round {round_idx+1:3d}/{n_rounds} | {loss_str}")
 
     return cluster_models, cluster_losses, cluster_labels, recluster_history
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+#  Feature Heterogeneity Simulator  (Paper 7 – LCFed Fix)
+#
+#  Real-world EHR data: hospitals often record DIFFERENT clinical variables.
+#  e.g., Hospital A (community) may lack advanced lab panels;
+#        Hospital B (ICU-specialist) may have full vital sign monitoring.
+#
+#  This simulates that scenario by masking one feature group per hospital,
+#  then tests whether our FedCM gradient-soft-clustering can handle
+#  feature-space heterogeneity ON TOP OF distributional heterogeneity.
+#  (Paper 7 LCFed only handles feature heterogeneity, not both.)
+#
+#  Feature Groups (44 MIMIC-IV features split into 4 clinical domains):
+#    Group 0 — Vitals          (indices  0–10)   11 features
+#    Group 1 — Lab values      (indices 11–25)   15 features
+#    Group 2 — Demographics    (indices 26–35)   10 features
+#    Group 3 — Severity scores (indices 36–43)    8 features
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Default feature group boundaries for MIMIC-IV 44-feature dataset
+MIMIC_FEATURE_GROUPS = {
+    0: list(range(0,  11)),   # Vitals          (11 features)
+    1: list(range(11, 26)),   # Lab values      (15 features)
+    2: list(range(26, 36)),   # Demographics    (10 features)
+    3: list(range(36, 44)),   # Severity scores  (8 features)
+}
+
+MIMIC_FEATURE_GROUP_NAMES = {
+    0: 'Vitals (0–10)',
+    1: 'Lab Values (11–25)',
+    2: 'Demographics (26–35)',
+    3: 'Severity Scores (36–43)',
+}
+
+
+def simulate_feature_heterogeneity(
+    client_data: list,
+    feature_groups: dict = None,
+    missing_group_per_hospital: dict = None,
+    seed: int = 42,
+    verbose: bool = True,
+) -> tuple:
+    """
+    Simulate per-hospital feature heterogeneity by masking one feature
+    group per hospital (zero-imputed).
+
+    Models Paper 7 (LCFed) scenario: hospitals have different clinical
+    feature sets due to equipment, recording practices, or data governance.
+    Addresses LCFed's open problem: combining feature-space heterogeneity
+    with distributional-space soft clustering has never been done.
+
+    Strategy:
+    ---------
+    Each hospital is randomly assigned ONE feature group to "mask"
+    (columns set to 0.0 — mean-imputed zero for standardised data).
+    The masking is applied to BOTH X_train and X_val to simulate
+    a hospital that never records those features.
+
+    Parameters
+    ----------
+    client_data              : list of dicts from prepare_client_data()
+                               (each dict has 'X_train', 'X_val', ...)
+    feature_groups           : dict {group_id: list_of_col_indices}
+                               Defaults to MIMIC_FEATURE_GROUPS (4 groups)
+    missing_group_per_hospital : dict {client_idx: group_id}
+                               Optional. If None, randomly assigned.
+                               Set to {} for NO masking (identity transform).
+    seed                     : int — random seed for group assignment
+    verbose                  : bool — print masking summary
+
+    Returns
+    -------
+    masked_client_data : list — copy of client_data with masked X_train/X_val
+    missing_groups     : dict {client_idx: group_id} — which group was masked
+    mask_info          : dict — summary of masking configuration
+
+    Notes
+    -----
+    - Original client_data is NOT modified in-place; copies are returned.
+    - X values for masked columns are set to 0.0 (standard z-score mean).
+    - Hospital adapter (FeatureProjectionAdapter in models_torch.py) can
+      then learn to project the reduced feature space back to 44 dims.
+    """
+    import copy
+
+    if feature_groups is None:
+        feature_groups = MIMIC_FEATURE_GROUPS
+
+    n_clients = len(client_data)
+    n_groups  = len(feature_groups)
+
+    # Assign missing group per hospital
+    if missing_group_per_hospital is None:
+        rng = np.random.RandomState(seed)
+        # Rotate through groups so at least one hospital per group
+        base = [i % n_groups for i in range(n_clients)]
+        rng.shuffle(base)
+        missing_group_per_hospital = {i: base[i] for i in range(n_clients)}
+
+    # Deep-copy client_data to avoid mutating originals
+    masked_client_data = copy.deepcopy(client_data)
+
+    mask_info = {}
+    for cid, data in enumerate(masked_client_data):
+        group_id = missing_group_per_hospital.get(cid, None)
+
+        if group_id is None:
+            # No masking for this hospital
+            mask_info[cid] = {
+                'masked_group': None,
+                'masked_cols':  [],
+                'group_name':   'None (full features)',
+                'n_masked':     0,
+            }
+            continue
+
+        cols_to_mask = feature_groups[group_id]
+        group_name   = MIMIC_FEATURE_GROUP_NAMES.get(group_id, f'Group {group_id}')
+
+        # Apply zero-masking (mean-imputed for standardised data)
+        data['X_train'][:, cols_to_mask] = 0.0
+        data['X_val']  [:, cols_to_mask] = 0.0
+
+        mask_info[cid] = {
+            'masked_group': group_id,
+            'masked_cols':  cols_to_mask,
+            'group_name':   group_name,
+            'n_masked':     len(cols_to_mask),
+        }
+
+        if verbose:
+            print(f"  Hospital {cid}: masked {group_name} "
+                  f"({len(cols_to_mask)} features, cols {cols_to_mask[:3]}...)")
+
+    if verbose:
+        print(f"\n  Feature heterogeneity summary:")
+        print(f"    Total hospitals    : {n_clients}")
+        print(f"    Total feature groups: {n_groups}")
+        for gid, gname in MIMIC_FEATURE_GROUP_NAMES.items():
+            affected = [c for c, info in mask_info.items()
+                        if info['masked_group'] == gid]
+            print(f"    Group {gid} ({gname}): masked for hospitals {affected}")
+
+    return masked_client_data, missing_group_per_hospital, mask_info
+
+
+def get_available_feature_dims(
+    mask_info: dict,
+    total_features: int = 44,
+) -> dict:
+    """
+    Return the number of available (non-masked) features per hospital.
+
+    Used by FeatureProjectionAdapter to know each hospital's input_dim.
+
+    Parameters
+    ----------
+    mask_info      : dict — output of simulate_feature_heterogeneity()
+    total_features : int — full feature count (default: 44 for MIMIC-IV)
+
+    Returns
+    -------
+    dict {client_idx: int} — available feature count per hospital
+    """
+    return {
+        cid: total_features - info['n_masked']
+        for cid, info in mask_info.items()
+    }
