@@ -1,0 +1,32 @@
+  Loaded: 18725 patients, 87 features
+  Mortality rate: 0.109
+
+Running FedAvg baseline (20 rounds, 5 local epochs) ...
+
+Running MCFL personalization (20 rounds, 5 local epochs) ...
+
+============================================================
+  PHASE 2 COMPLETE
+============================================================
+  Final Global AUC       : 0.8025
+  Final Global F1        : 0.3752
+  Final Global Recall    : 0.3627
+  Final Global Precision : 0.3885
+  Final Global Accuracy  : 0.8684
+  Optimal Threshold      : 0.50
+  Final Avg Local AUC    : 0.7952
+============================================================
+
+Running Full personalization (default) (20 rounds, 5 local epochs) ...
+
+============================================================
+  PHASE 2 COMPLETE
+============================================================
+  Final Global AUC       : 0.8176
+  Final Global F1        : 0.3975
+  Final Global Recall    : 0.3897
+  Final Global Precision : 0.4056
+  Final Global Accuracy  : 0.8713
+  Optimal Threshold      : 0.50
+  Final Avg Local AUC    : 0.7817
+============================================================

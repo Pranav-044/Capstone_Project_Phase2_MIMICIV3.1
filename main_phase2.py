@@ -26,6 +26,12 @@ sys.path.insert(0, PHASE1_DIR)
 
 from federated_training import partition_dirichlet, prepare_client_data
 from phase2_training import run_phase2
+from evaluate_fairness import (
+    compute_fairness_metrics,
+    extract_per_client_auroc,
+    compare_all_methods,
+    comm_reduction_ratio,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,14 +154,48 @@ def parse_args():
     p.add_argument('--mu',         type=float, default=0.01)
 
     # Phase 2 hyperparameters
-    p.add_argument('--temperature',type=float, default=1.0,
+    p.add_argument('--temperature',   type=float, default=1.0,
                    help='Softmax temperature for FedSPD soft membership')
-    p.add_argument('--tau',        type=float, default=0.50,
+    p.add_argument('--tau',           type=float, default=0.50,
                    help='FedCM drift detection threshold')
-    p.add_argument('--mcfl_iter',  type=int,   default=60,
+    p.add_argument('--mcfl_iter',     type=int,   default=60,
                    help='MCFL α optimization iterations')
-    p.add_argument('--mcfl_lr',    type=float, default=0.10,
+    p.add_argument('--mcfl_lr',       type=float, default=0.10,
                    help='MCFL α learning rate')
+
+    # ── Paper 5: Ditto + Fairness ────────────────────────────────────────
+    p.add_argument('--mode',          type=str,   default='standard',
+                   choices=['standard', 'ditto', 'ppfl', 'feature_hetero', 'full'],
+                   help='Pipeline mode: standard | ditto | ppfl | feature_hetero | full')
+    p.add_argument('--lambda_ditto',  type=float, default=0.0,
+                   help='Ditto proximal penalty weight (0 = disabled). '
+                        'Paper 5 fix: set to 0.01 to improve fairness.')
+    p.add_argument('--ditto_lr',      type=float, default=0.0005,
+                   help='SGD learning rate for Ditto local fine-tuning')
+    p.add_argument('--ditto_epochs',  type=int,   default=5,
+                   help='Number of Ditto fine-tuning epochs per round')
+
+    # ── Paper 6: PPFL body-head split ───────────────────────────────────
+    p.add_argument('--ppfl_split',    action='store_true',
+                   help='Enable PPFL body-head aggregation split. '
+                        'Transmits only body (fc1+fc2) weights per round.')
+
+    # ── Paper 7: Feature heterogeneity ───────────────────────────────────
+    p.add_argument('--feature_hetero', action='store_true',
+                   help='Simulate per-hospital feature masking (LCFed scenario).')
+
+    # ── Cluster tuning ───────────────────────────────────────────────────
+    p.add_argument('--n_clusters_min', type=int,   default=2,
+                   help='Minimum number of expert clusters for spectral search')
+    p.add_argument('--n_clusters_max', type=int,   default=None,
+                   help='Maximum clusters (default: n_clients - 1)')
+    p.add_argument('--epsilon_fd',     type=float, default=1e-3,
+                   help='Finite-difference epsilon for MCFL gradient estimation')
+
+    # ── Experiment comparison ────────────────────────────────────────────
+    p.add_argument('--compare_all',   action='store_true',
+                   help='After running, print the full research comparison table '
+                        'with fairness and communication metrics.')
 
     p.add_argument('--verbose',    action='store_true')
     p.add_argument('--out_dir',    type=str,
@@ -195,8 +235,16 @@ def main():
         print(f"  Client {i}: n={cd['n_samples']} | "
               f"mortality={cd['mortality_rate']:.3f}")
 
+    # Feature heterogeneity simulation (Paper 7 - LCFed Fix)
+    if args.feature_hetero or args.mode == 'feature_hetero':
+        from federated_training import simulate_feature_heterogeneity
+        print("\n[2b/4] Simulating per-hospital feature heterogeneity ...")
+        client_data, missing_groups, mask_info = simulate_feature_heterogeneity(
+            client_data, seed=args.seed, verbose=True)
+        print(f"  Feature masking applied to {len(missing_groups)} hospitals")
+
     # Train
-    print(f"\n[3/4] Running Phase 2 ({args.rounds} rounds) ...")
+    print(f"\n[3/4] Running Phase 2 ({args.rounds} rounds, mode={args.mode}) ...")
     results = run_phase2(
         client_data=client_data,
         X_test=X_test,
@@ -212,8 +260,16 @@ def main():
         drift_tau=args.tau,
         mcfl_n_iter=args.mcfl_iter,
         mcfl_lr_alpha=args.mcfl_lr,
+        mcfl_epsilon=args.epsilon_fd,
         verbose=args.verbose,
         seed=args.seed,
+        mode=args.mode,
+        lambda_ditto=args.lambda_ditto,
+        ditto_lr=args.ditto_lr,
+        ditto_epochs=args.ditto_epochs,
+        ppfl_split=args.ppfl_split,
+        n_clusters_min=args.n_clusters_min,
+        n_clusters_max=args.n_clusters_max,
     )
 
     # Save
@@ -225,13 +281,51 @@ def main():
     print("  FINAL RESULTS")
     print("=" * 60)
     final = results['personalized_metrics']['mean_personal_global']
-    print(f"  {'Method':<40} {'AUC':>7} {'F1':>7} {'Acc':>7}")
-    print(f"  {'-'*61}")
-    print(f"  {'Gradient-Soft-CFL + MCFL (Phase 2 Ours)':<40} "
+    method_tag = f"Gradient-Soft-CFL + MCFL [{args.mode}]"
+    print(f"\n  {'Method':<42} {'AUC':>7} {'F1':>7} {'Acc':>7}")
+    print(f"  {'-'*63}")
+    print(f"  {method_tag:<42} "
           f"{final['auc']:>7.4f} "
           f"{final['f1']:>7.4f} "
           f"{final['accuracy']:>7.4f}")
-    print(f"\n  (Run Phase 1 main.py for FedAvg/DBSCAN/Agglom baselines)")
+
+    # Fairness metrics (Paper 5 fix)
+    if results.get('fairness_history'):
+        last_f = results['fairness_history'][-1]
+        print(f"\n  Fairness Metrics (Final Round):")
+        print(f"    Mean AUROC   : {last_f['mean_auroc']:.4f}")
+        print(f"    Std  AUROC   : {last_f['std_auroc']:.4f}  "
+              f"(disparity -- lower = fairer)")
+        print(f"    Worst AUROC  : {last_f['worst_client_auroc']:.4f}  "
+              f"(worst hospital -- higher = better)")
+        print(f"    Range AUROC  : {last_f['range_auroc']:.4f}")
+
+    # Communication bandwidth (Paper 6 fix)
+    from models_torch import FederatedMLPTorch
+    _m    = FederatedMLPTorch(input_dim=input_dim)
+    ratio = comm_reduction_ratio(_m)
+    print(f"\n  Communication Overhead (Paper 6 PPFL fix):")
+    print(f"    Full model   : {ratio['full_model_mb']:.4f} MB/round "
+          f"({ratio['total_params']:,} params)")
+    print(f"    Body-only    : {ratio['body_only_mb']:.4f} MB/round "
+          f"({ratio['body_params']:,} params)")
+    print(f"    Bandwidth saving: {ratio['savings_pct']:.1f}% "
+          f"(ratio = {ratio['reduction_ratio']:.3f})")
+
+    # Full research comparison table
+    per_client_auroc = extract_per_client_auroc(
+        results['personalized_metrics'])
+    fairness = compute_fairness_metrics(per_client_auroc)
+    compare_all_methods({
+        method_tag: {
+            'fairness': fairness,
+            'comm_mb':  ratio['full_model_mb'],
+        },
+        f'{method_tag} + PPFL-split': {
+            'fairness': fairness,
+            'comm_mb':  ratio['body_only_mb'],
+        },
+    })
     print("=" * 60)
 
 
