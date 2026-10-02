@@ -107,6 +107,9 @@ def save_results(results: dict, out_dir: str):
         'final_global_auc':      final['auc'],
         'final_global_f1':       final['f1'],
         'final_global_accuracy': final['accuracy'],
+        'final_global_recall':   final['recall'],
+        'final_global_precision':final['precision'],
+        'final_global_threshold':final['threshold'],
         'final_avg_local_auc':   results['personalized_metrics']['avg_local_auc'],
     }
     with open(os.path.join(out_dir, 'summary.json'), 'w') as f:

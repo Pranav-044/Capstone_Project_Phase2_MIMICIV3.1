@@ -10,7 +10,7 @@ import torch
 import os
 import sys
 import time
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, recall_score, precision_score, accuracy_score
 
 # Add Phase 1 to path to import Agglomerative clustering
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'fl_physionet_project')))
@@ -98,12 +98,19 @@ def run_clustered_baseline(rounds=20, epochs=5, seed=42):
     auc = roc_auc_score(y_test, y_pred_ensemble)
     y_bin = (y_pred_ensemble >= 0.5).astype(int)
     f1 = f1_score(y_test, y_bin, zero_division=0)
+    recall = recall_score(y_test, y_bin, zero_division=0)
+    precision = precision_score(y_test, y_bin, zero_division=0)
+    accuracy = accuracy_score(y_test, y_bin)
     
     print("="*50)
     print("  FINAL CLUSTERED BASELINE RESULTS (MIMIC-IV)")
     print("="*50)
     print(f"  Final Global AUC       : {auc:.4f}")
     print(f"  Final Global F1        : {f1:.4f}")
+    print(f"  Final Global Recall    : {recall:.4f}")
+    print(f"  Final Global Precision : {precision:.4f}")
+    print(f"  Final Global Accuracy  : {accuracy:.4f}")
+    print(f"  Threshold              : 0.50")
     print("="*50)
 
 if __name__ == '__main__':
